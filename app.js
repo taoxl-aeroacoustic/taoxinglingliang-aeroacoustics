@@ -15,6 +15,7 @@ let figureBase = './data/figures/';
 let feedAvailable = false;
 let imageVersion = 0;
 let refreshing = false;
+let lastCheck = 0;
 let currentImage = null;
 function label(id,text){ $(id).textContent=text; }
 function percent(v){return v.toFixed(1)+'%';}
@@ -107,8 +108,8 @@ function drawTrend(){
 function syncStatus(){
     if(!data)return;
     const lag=Date.now()-Date.parse(data.publishedAt),allDone=Object.values(data.cases).every(c=>c.status==='complete');
-    const fresh=lag<10*60e3,el=$('connection');
-    const name=allDone?'Both runs verified':feedAvailable?(fresh?'Latest snapshot':'Snapshot delayed'):'Saved snapshot';
+    const fresh=lag<75*60e3,el=$('connection');
+    const name=allDone?'Both runs verified':feedAvailable?(fresh?'Hourly snapshot':'Snapshot delayed'):'Saved snapshot';
     el.className=fresh&&feedAvailable?'fresh':'stale';el.replaceChildren(document.createElement('i'),document.createTextNode(name));
     label('published',utc(data.publishedAt));
 }
@@ -151,8 +152,21 @@ function render(){
     label('fwh-stat',fmt.format(data.method.surfacePanels)+' FW-H panels · 5 duct rings');
 }
 async function poll(){
-    if(refreshing)return;refreshing=true;$('refresh').disabled=true;
-    const sources=remote?[[rawBase+'snapshot.json',rawBase+'figures/'],['./data/snapshot.json','./data/figures/']]:[['./data/snapshot.json','./data/figures/']];
+    if(refreshing)return;refreshing=true;lastCheck=Date.now();$('refresh').disabled=true;
+    const sources=[['./data/snapshot.json','./data/figures/']];
+    if(remote){
+        const abort=new AbortController(),timeout=setTimeout(()=>abort.abort(),5500);
+        try{
+            const ref=await fetch('https://api.github.com/repos/taoxl-aeroacoustic/taoxinglingliang-aeroacoustics/git/ref/heads/live-data?hour='+Math.floor(Date.now()/3600000),{signal:abort.signal,cache:'no-store',credentials:'omit'});
+            if(ref.ok){
+                const sha=(await ref.json())?.object?.sha;
+                if(/^[a-f0-9]{40}$/.test(sha)){
+                    const base=rawBase.replace('live-data/',sha+'/');
+                    sources.unshift([base+'snapshot.json',base+'figures/']);
+                }
+            }
+        }catch(e){}finally{clearTimeout(timeout);}
+    }
     let fetched=false;
     try{
         if(location.protocol!=='file:')for(const [url,assets] of sources){
@@ -160,7 +174,7 @@ async function poll(){
             try{const res=await fetch(url+'?t='+Math.floor(Date.now()/60000),{cache:'no-store',signal:controller.signal,credentials:'omit'});if(!res.ok)continue;
                 const next=await res.json();if(!valid(next))continue;
                 if(!data || Date.parse(next.publishedAt)>=Date.parse(data.publishedAt)){data=next;figureBase=assets;}
-                feedAvailable=!remote||url.startsWith(rawBase);fetched=true;break;
+                feedAvailable=true;fetched=true;break;
             }catch(e){}finally{clearTimeout(timer);}
         }
         if(!fetched)feedAvailable=false;
@@ -205,7 +219,7 @@ function renderTime(c){
     label('remaining',duration(t.marchSecondsLeft));label('lined-eta',shortUtc(g.linedEarliest));label('both-eta',shortUtc(g.bothMarchEnd));
     label('lined-time-label',data.cases.lined.frame?'Lined run · logged start':'Lined run · earliest start');
     const basis=t.rate?'The recent rate covers '+fmt.format(t.rate.steps)+' root steps over '+duration(t.rate.observedSeconds)+'. ':'';
-    label('time-note',basis+'Elapsed time covers the production sessions logged in this study. The forecast uses measured rates before and during acquisition. Until the lined run has measurements, it uses rigid-wall rates. Validation, queue handoff and offline rendering add wall time.');
+    label('time-note',basis+'Runtime covers sessions logged in this study. The forecast uses up to eight hours per phase, including checkpoint time. Lined estimates use rigid measurements until lined data arrive. Validation, handoff and offline rendering take additional time.');
 }
 const ringColors=['#195b50','#b04b39','#2d66a3','#82649a','#986127'];
 function drawRings(){
@@ -254,7 +268,13 @@ async function openFigure(item){
 
 new ResizeObserver(()=>{plotField();drawTrend();if(data)drawRings();}).observe(document.querySelector('.primary'));
 new ResizeObserver(drawTrend).observe(document.querySelector('.chart-box'));
-document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll();});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&Date.now()-lastCheck>=3600000)poll();});
 if(valid(data))render();
-poll();setInterval(()=>{if(!document.hidden)poll();},60000);
+function checkNextHour(){
+    const now=Date.now();
+    let next=Math.floor(now/3600000)*3600000+5*60000;
+    if(next<=now)next+=3600000;
+    setTimeout(()=>{if(!document.hidden)poll();checkNextHour();},next-now);
+}
+poll();checkNextHour();
 
