@@ -8,6 +8,7 @@ const qtyInfo = {rise:{key:3,label:'Pressure rise',unit:'Pa'},qin:{key:1,label:'
 const requested = new URLSearchParams(location.search).get('case');
 let wall = requested === 'lined' ? 'lined' : 'rigid';
 let field = 'speed';
+let reviewTurn = 'latest';
 let qty = 'rise';
 let data = window.HD150_BOOT || null;
 let figureBase = './data/figures/';
@@ -61,7 +62,10 @@ function plotField(){
     });
 }
 function updateField(){
-    const c=data.cases[wall], f=c.frame, isVelocity=field==='speed', src=isVelocity?f?.field:f?.duct;
+    const c=data.cases[wall], f=c.frame, isVelocity=field==='speed';
+    const archived=(c.turnFrames||[]).find(r=>String(r.turn)===reviewTurn);
+    const original=isVelocity?f?.field:f?.duct, historic=archived?.[isVelocity?'speed':'pressure'];
+    const src=archived?(historic&&original?{...original,...historic,png:figureBase+historic.file}:null):original;
     const version=++imageVersion;
     currentImage=null;
     setupCanvas($('field'));selected('data-field',field);
@@ -73,10 +77,10 @@ function updateField(){
         label('field-empty',!f?(c.status==='queued'?'Acoustic liner queued after the rigid-wall run.':'Waiting for the first archived field.'):'Duct pressure will appear when acoustic acquisition begins.');
         label('field-info','No field archived for this selection.');return;
     }
-    const limit=isVelocity?data.scales.velocity:data.scales.pressure;
+    const limit=archived?(isVelocity?100:1000):(isVelocity?data.scales.velocity:data.scales.pressure);
     $('scale').style.background='linear-gradient(to right,'+(isVelocity?data.scales.velocityColors:data.scales.pressureColors).join(',')+')';
     label('low',isVelocity?'0':String(-limit));label('high',String(limit));label('units',isVelocity?'m/s':'Pa');
-    label('field-info',isVelocity?'Slice y = '+(src.y>=0?'+':'')+src.y+' mm · '+src.nz+' × '+src.nx+' samples':'r = '+src.radius+' mm · '+src.angles+' azimuths × '+src.z.length+' stations');
+    label('field-info',(isVelocity?'Slice y = '+(src.y>=0?'+':'')+src.y+' mm · '+src.nz+' × '+src.nx+' samples':'r = '+src.radius+' mm · '+src.angles+' azimuths × '+src.z.length+' stations')+(archived?' · root '+fmt.format(archived.step):''));
     $('field').setAttribute('aria-label',isVelocity?'Axial velocity-magnitude slice, from '+src.min.toFixed(2)+' to '+src.max.toFixed(2)+' metres per second.':'Duct pressure fluctuation, from '+src.min.toFixed(1)+' to '+src.max.toFixed(1)+' pascals.');
     const img=new Image();
     img.onload=()=>{if(version===imageVersion){currentImage=img;plotField();}};
@@ -110,15 +114,19 @@ function syncStatus(){
 }
 function renderGallery(){
     const c=data.cases[wall], comparison=data.comparison;
-    const figures=[...(c.gallery||[]),...(comparison?.figures||[])];
+    const scientific=(c.gallery||[]).concat(c.acousticFigures||[],comparison?.figures||[]).map(i=>({...i,group:'sound'}));
+    const all=[...(c.media||[]),...scientific,...(data.studyFigures||[]).map(i=>({...i,group:'geometry'}))];
+    const filter=$('gallery-filter').value;
+    const figures=all.filter(i=>filter==='all'||(filter==='movies'&&i.video)||(filter==='geometry'&&i.group==='geometry')||(filter==='sound'&&(i.group==='sound'||/Broadband|radiated sound|Five-view/.test(i.label))));
     const gallery=$('gallery');gallery.replaceChildren();
     for(const item of figures){
-        if(!/^(rigid|lined|comparison)-[a-z-]+-[0-9a-f]{16}\.webp$/.test(item.file))continue;
+        if(!/^(rigid|lined|shared|comparison)-[a-z0-9-]+-[0-9a-f]{16}\.webp$/.test(item.file))continue;
         const btn=document.createElement('button'),img=new Image(),text=document.createElement('span');
-        img.alt=item.label;img.src=figureBase+item.file;img.loading='lazy';text.textContent=item.label;
-        btn.type='button';btn.append(img,text);btn.onclick=()=>{label('view-title',item.label);$('full-view').src=img.src;$('full-view').alt=item.label;$('viewer').showModal();};gallery.append(btn);
+        img.alt=item.label;img.src=figureBase+item.file;img.loading='lazy';text.textContent=(item.video?'▷  ':'')+item.label;
+        btn.type='button';btn.append(img,text);btn.onclick=()=>openFigure(item);gallery.append(btn);
     }
-    label('output-status',figures.length?'Verified post-processing outputs for this study.':c.status==='queued'?'The lined run is queued. Its acoustic and aerodynamic results will appear here after acquisition.':'The five field views and harmonic results will appear as their post-processing checks finish.');
+    const nMovies=(c.media||[]).filter(i=>i.video).length;
+    label('output-status',figures.length+' entries in this view · '+nMovies+' archived films for this wall. '+(!c.acousticFigures?.length?'Five BPF harmonics, FW-H spectra and directivity follow the completed acoustic window. ':'Signed FW-H and duct-mode results are available.')+(data.mediaPending?' Some figures are being retried.':''));
     const comparisonBox=$('comparison');comparisonBox.replaceChildren();
     if(comparison){
         for(const k of ['rigid','lined']){const m=comparison.means[k],p=document.createElement('p');p.textContent=data.cases[k].name+' · window means · inlet '+m.qin.toFixed(4)+' m³/s · outlet '+m.qout.toFixed(4)+' m³/s · pressure rise '+m.rise.toFixed(2)+' Pa';comparisonBox.append(p);}
@@ -128,7 +136,7 @@ function renderGallery(){
 function render(){
     if(!valid(data))return;
     const c=data.cases[wall],f=c.frame,a=f?.aero,done=c.status==='complete',step=done?c.totalSteps:(f?.step??0),pct=100*step/c.totalSteps;
-    selected('data-case',wall);selected('data-qty',qty);syncStatus();updateField();
+    selected('data-case',wall);selected('data-qty',qty);syncStatus();renderTurns(c);updateField();renderTime(c);drawRings();
     label('case-status',statusNames[c.status]||'Awaiting update');
     $('case-status').parentElement.classList.toggle('active',['running','complete','checkpoint','processing'].includes(c.status));
     label('percent',percent(pct));$('progress').value=pct;label('steps',fmt.format(step)+' / '+fmt.format(c.totalSteps));
@@ -159,7 +167,7 @@ async function poll(){
         if(valid(data))render();else label('case-status','Snapshot unavailable');
     }finally{refreshing=false;$('refresh').disabled=false;}
 }
-document.querySelectorAll('[data-case]').forEach(b=>b.addEventListener('click',()=>{wall=b.dataset.case;const u=new URL(location.href);u.searchParams.set('case',wall);try{history.replaceState(null,'',u);}catch(e){}render();}));
+document.querySelectorAll('[data-case]').forEach(b=>b.addEventListener('click',()=>{wall=b.dataset.case;reviewTurn='latest';const u=new URL(location.href);u.searchParams.set('case',wall);try{history.replaceState(null,'',u);}catch(e){}render();}));
 document.querySelectorAll('[data-field]').forEach(b=>b.addEventListener('click',()=>{field=b.dataset.field;if(data)updateField();}));
 document.querySelectorAll('[data-qty]').forEach(b=>b.addEventListener('click',()=>{qty=b.dataset.qty;render();}));
 $('refresh').onclick=poll;
@@ -171,7 +179,80 @@ $('download').onclick=()=>{
     const csv=['rotor_turns,inlet_flow_m3_s,outlet_flow_m3_s,pressure_rise_Pa',...rows.map(row=>row.join(','))].join('\r\n');
     const url=URL.createObjectURL(new Blob([csv],{type:'text/csv'})),a=document.createElement('a');a.href=url;a.download='hd150-'+wall+'-history.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 };
-new ResizeObserver(()=>{plotField();drawTrend();}).observe(document.querySelector('.primary'));
+let mediaURL=null;
+let mediaVersion=0;
+function renderTurns(c){
+    const sel=$('turn-picker'),list=c.turnFrames||[];
+    sel.replaceChildren(new Option('Latest available','latest'));
+    for(const r of [...list].reverse())sel.add(new Option('Revolution '+r.turn,' '+r.turn));
+    for(const opt of sel.options)opt.value=opt.value.trim();
+    if(!list.some(r=>String(r.turn)===reviewTurn))reviewTurn='latest';
+    sel.value=reviewTurn;sel.disabled=!list.length;
+    const rec=list.find(r=>String(r.turn)===reviewTurn);
+    label('turn-note',rec?'Captured at '+rec.turns.toFixed(3)+' rev · '+utc(rec.time):list.length?list.length+' completed turns archived':'Waiting for archived turns');
+}
+$('turn-picker').onchange=()=>{reviewTurn=$('turn-picker').value;renderTurns(data.cases[wall]);updateField();};
+$('gallery-filter').onchange=()=>{if(data)renderGallery();};
+function duration(seconds){
+    if(seconds==null||!Number.isFinite(seconds))return '—';
+    const m=Math.round(seconds/60),h=Math.floor(m/60);
+    return h>=48?Math.floor(h/24)+' d '+h%24+' h':h+' h '+m%60+' min';
+}
+function shortUtc(t){return t?new Date(t).toISOString().slice(5,16).replace('T',' ')+' UTC':'—';}
+function renderTime(c){
+    const t=c.timing||{},g=data.timing||{};
+    label('elapsed',duration(t.elapsedSeconds));label('step-time',t.rate?t.rate.secondsPerStep.toFixed(2)+' s':'—');
+    label('remaining',duration(t.marchSecondsLeft));label('lined-eta',shortUtc(g.linedEarliest));label('both-eta',shortUtc(g.bothMarchEnd));
+    label('lined-time-label',data.cases.lined.frame?'Lined run · logged start':'Lined run · earliest start');
+    const basis=t.rate?'The recent rate covers '+fmt.format(t.rate.steps)+' root steps over '+duration(t.rate.observedSeconds)+'. ':'';
+    label('time-note',basis+'Elapsed time covers the production sessions logged in this study. The forecast uses measured rates before and during acquisition. Until the lined run has measurements, it uses rigid-wall rates. Validation, queue handoff and offline rendering add wall time.');
+}
+const ringColors=['#195b50','#b04b39','#2d66a3','#82649a','#986127'];
+function drawRings(){
+    const el=$('rings'),c=data?.cases?.[wall],d=c?.frame?.duct,lines=d?.profiles;
+    el.hidden=!lines;$('ring-key').replaceChildren();
+    if(!lines){label('sound-label',c?.status==='queued'?'The lined run is queued.':'Awaiting recorded duct pressure.');return;}
+    label('sound-label','Latest acquisition · '+(d.sampleTime*1000).toFixed(3)+' ms flow time · r = '+d.radius+' mm · range '+d.min.toFixed(1)+' to '+d.max.toFixed(1)+' Pa.');
+    const s=setupCanvas(el);if(!s)return;
+    const {ctx,w,h}=s,L=45,R=13,T=10,B=28,mx=data.scales.pressure;
+    const X=v=>L+(w-L-R)*v/360,Y=v=>T+(h-B-T)*(mx-v)/(2*mx);
+    ctx.textAlign='right';ctx.textBaseline='middle';
+    for(const v of [-mx,-mx/2,0,mx/2,mx]){const y=Y(v);ctx.strokeStyle='#dce2db';ctx.beginPath();ctx.moveTo(L,y);ctx.lineTo(w-R,y);ctx.stroke();ctx.fillStyle='#536660';ctx.fillText(String(v),L-6,y);}
+    ctx.textAlign='center';for(const a of [0,90,180,270,360])ctx.fillText(a+'°',Math.max(13,Math.min(w-15,X(a))),h-12);
+    lines.forEach((row,j)=>{ctx.strokeStyle=ringColors[j];ctx.lineWidth=1.5;ctx.beginPath();[...row,row[0]].forEach((v,i)=>{if(i===0)ctx.moveTo(X(0),Y(v));else ctx.lineTo(X(i*360/row.length),Y(v));});ctx.stroke();
+        const key=document.createElement('span');key.style.borderColor=ringColors[j];key.textContent='z = '+d.z[j]+' mm';$('ring-key').append(key);});
+}
+function releaseVideo(){
+    mediaVersion++;const v=$('movie-view');v.pause();v.removeAttribute('src');v.load();v.hidden=true;
+    if(mediaURL){URL.revokeObjectURL(mediaURL);mediaURL=null;}
+}
+$('viewer').addEventListener('close',releaseVideo);
+async function openFigure(item){
+    releaseVideo();const version=mediaVersion,base=figureBase,img=$('full-view'),v=$('movie-view');
+    label('view-title',item.label);img.hidden=false;img.alt=item.label;img.src=base+item.file;
+    label('view-status',item.video?'Loading '+(item.frames?fmt.format(item.frames)+' frames':'animation')+'…':'');
+    const seq=item.sequence||[],slider=$('sequence-range');
+    $('sequence').hidden=!seq.length;
+    if(seq.length){
+        slider.max=String(seq.length-1);slider.value='0';label('sequence-step','');
+        slider.oninput=()=>{const k=Number(slider.value);v.pause();v.hidden=true;img.hidden=false;img.src=base+seq[k];label('sequence-step','Root '+fmt.format(item.firstStep+k*item.stepStride));};
+    }
+    $('viewer').showModal();
+    if(!item.video)return;
+    try{
+        if(location.protocol==='file:'){v.src=base+item.video;}
+        else{
+            const res=await fetch(base+item.video,{credentials:'omit'});if(!res.ok)throw Error('Film not available');
+            const buffer=await res.arrayBuffer();if(version!==mediaVersion)return;
+            mediaURL=URL.createObjectURL(new Blob([buffer],{type:'video/mp4'}));v.src=mediaURL;
+        }
+        if(version!==mediaVersion)return;
+        v.poster=base+item.file;v.hidden=false;img.hidden=true;
+        label('view-status',(item.frames?fmt.format(item.frames)+' frames':'Animation')+(item.firstStep!=null&&item.lastStep!=null?' · root steps '+fmt.format(item.firstStep)+'–'+fmt.format(item.lastStep):''));
+    }catch(e){if(version===mediaVersion)label('view-status','The film is temporarily unavailable. Please reopen it to retry.');}
+}
+
+new ResizeObserver(()=>{plotField();drawTrend();if(data)drawRings();}).observe(document.querySelector('.primary'));
 new ResizeObserver(drawTrend).observe(document.querySelector('.chart-box'));
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll();});
 if(valid(data))render();
