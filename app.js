@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 const fmt = new Intl.NumberFormat('en-US');
 const rawBase = 'https://raw.githubusercontent.com/taoxl-aeroacoustic/taoxinglingliang-aeroacoustics/live-data/';
 const remote = location.hostname === 'taoxl-aeroacoustic.github.io';
-const statusNames = {running:'Running', queued:'Queued', checkpoint:'Saving checkpoint', processing:'Post-processing', complete:'Verified', interrupted:'Interrupted', preparing:'Preparing'};
+const statusNames = {running:'Running', queued:'Queued', checkpoint:'Saving checkpoint', processing:'Post-processing', complete:'Verified', interrupted:'Interrupted', preparing:'Preparing', benchmarking:'Benchmarking'};
 const qtyInfo = {rise:{key:3,label:'Pressure rise',unit:'Pa'},qin:{key:1,label:'Inlet flow',unit:'m³/s'},qout:{key:2,label:'Outlet flow',unit:'m³/s'}};
 const requested = new URLSearchParams(location.search).get('case');
 let wall = requested === 'lined' ? 'lined' : 'rigid';
